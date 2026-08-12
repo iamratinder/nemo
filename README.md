@@ -42,15 +42,29 @@ git diff | .venv/bin/python nemo.py "Write a commit message for this diff"
 | `--no-reasoning` | ask the model not to reason |
 | `--stream` | stream the reply as it is generated |
 | `--temperature`, `--max-tokens` | sampling controls |
-
 | `--usage` | print token counts after each reply |
+| `--plain` | print raw markdown instead of rendering it |
 | `--json` | print the raw assistant message (one-shot only) |
 
 `--max-tokens` counts reasoning tokens too: set it too low and the reply comes
 back as truncated thinking with no answer. Budget a few hundred tokens, or pass
 `--no-reasoning`.
 
+### Markdown
+
+Replies are rendered with [rich](https://github.com/Textualize/rich) — bold and
+headers styled, bullets as real bullets, fenced code blocks syntax-highlighted,
+long lines wrapped to the terminal. Streaming re-renders in place as text
+arrives.
+
+Rendering only happens when stdout is a terminal, so pipes and redirects still
+get the model's raw markdown and stay safe to parse. `--plain` forces raw output
+in a terminal too, and `/markdown off` toggles it mid-chat. Set
+`NEMO_CODE_THEME` to any Pygments theme (default `monokai`) if the code-block
+colors clash with your terminal.
+
 ### Interactive commands
 
 `/help` `/reset` `/model [name]` `/system [text]` `/reasoning [on|off]`
-`/think [on|off]` `/stream [on|off]` `/history` `/save <file>` `/exit`
+`/think [on|off]` `/stream [on|off]` `/markdown [on|off]` `/history`
+`/save <file>` `/exit`

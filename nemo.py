@@ -13,6 +13,9 @@ import sys
 
 import requests
 from dotenv import load_dotenv
+from rich.console import Console
+from rich.live import Live
+from rich.markdown import Markdown
 
 API_URL = "https://openrouter.ai/api/v1/chat/completions"
 DEFAULT_MODEL = "nvidia/nemotron-3.5-lightning:free"
@@ -38,6 +41,19 @@ class C:
 
 
 c = C(_color_enabled())
+console = Console()
+
+CODE_THEME = os.getenv("NEMO_CODE_THEME", "monokai")
+
+
+def render(text, markdown):
+    """Print an assistant reply, as rendered markdown or as-is."""
+    if not text:
+        return
+    if markdown:
+        console.print(Markdown(text, code_theme=CODE_THEME))
+    else:
+        print(text)
 
 
 def info(msg):
@@ -133,7 +149,7 @@ def complete(messages, cfg, api_key):
     return choices[0].get("message") or {}, payload.get("usage")
 
 
-def stream_complete(messages, cfg, api_key, show_reasoning):
+def stream_complete(messages, cfg, api_key, show_reasoning, markdown):
     """Streaming request. Prints as it goes; returns (assistant_message, usage)."""
     try:
         response = requests.post(
@@ -154,56 +170,79 @@ def stream_complete(messages, cfg, api_key, show_reasoning):
             message = body or "empty response"
         raise RuntimeError(f"HTTP {response.status_code}: {message}")
 
+    # The server sends text/event-stream with no charset, and requests falls
+    # back to ISO-8859-1 for text/*. SSE is always UTF-8; without this, every
+    # em dash and smart quote arrives as mojibake.
+    response.encoding = "utf-8"
+
     content_parts = []
     reasoning_parts = []
     details = {}
     usage = None
     in_reasoning = False
+    live = None
 
-    for line in response.iter_lines(decode_unicode=True):
-        if not line or line.startswith(":"):
-            continue  # keep-alive comment
-        if not line.startswith("data: "):
-            continue
-        data = line[len("data: "):]
-        if data == "[DONE]":
-            break
-        try:
-            chunk = json.loads(data)
-        except ValueError:
-            continue
-
-        message = _api_error(chunk)
-        if message:
-            raise RuntimeError(message)
-
-        usage = chunk.get("usage") or usage
-        choices = chunk.get("choices") or []
-        if not choices:
-            continue
-        delta = choices[0].get("delta") or {}
-
-        reasoning = delta.get("reasoning")
-        if reasoning:
-            reasoning_parts.append(reasoning)
-            if show_reasoning:
-                if not in_reasoning:
-                    print(f"{c.dim}thinking: ", end="", flush=True)
-                    in_reasoning = True
-                print(f"{c.dim}{reasoning}{c.reset}", end="", flush=True)
-
-        merge_reasoning_details(details, delta.get("reasoning_details"))
-
-        piece = delta.get("content")
-        if piece:
-            if in_reasoning:
-                print(f"{c.reset}\n")
-                in_reasoning = False
-            content_parts.append(piece)
+    def show(piece):
+        """Echo a content fragment, re-rendering the markdown as it grows."""
+        nonlocal live
+        if not markdown:
             print(piece, end="", flush=True)
+            return
+        if live is None:
+            # vertical_overflow="visible" so replies taller than the window
+            # scroll normally instead of being cropped to the viewport.
+            live = Live(console=console, refresh_per_second=12,
+                        vertical_overflow="visible")
+            live.start()
+        live.update(Markdown("".join(content_parts), code_theme=CODE_THEME))
 
-    if in_reasoning:
-        print(c.reset)
+    try:
+        for line in response.iter_lines(decode_unicode=True):
+            if not line or line.startswith(":"):
+                continue  # keep-alive comment
+            if not line.startswith("data: "):
+                continue
+            data = line[len("data: "):]
+            if data == "[DONE]":
+                break
+            try:
+                chunk = json.loads(data)
+            except ValueError:
+                continue
+
+            message = _api_error(chunk)
+            if message:
+                raise RuntimeError(message)
+
+            usage = chunk.get("usage") or usage
+            choices = chunk.get("choices") or []
+            if not choices:
+                continue
+            delta = choices[0].get("delta") or {}
+
+            reasoning = delta.get("reasoning")
+            if reasoning:
+                reasoning_parts.append(reasoning)
+                if show_reasoning:
+                    if not in_reasoning:
+                        print(f"{c.dim}thinking: ", end="", flush=True)
+                        in_reasoning = True
+                    print(f"{c.dim}{reasoning}{c.reset}", end="", flush=True)
+
+            merge_reasoning_details(details, delta.get("reasoning_details"))
+
+            piece = delta.get("content")
+            if piece:       
+                if in_reasoning:
+                    print(f"{c.reset}\n")
+                    in_reasoning = False
+                content_parts.append(piece)
+                show(piece)
+    finally:
+        if live is not None:
+            live.stop()
+        elif in_reasoning:
+            print(c.reset)
     print()
 
     message = {"role": "assistant", "content": "".join(content_parts)}
@@ -214,14 +253,14 @@ def stream_complete(messages, cfg, api_key, show_reasoning):
     return message, usage
 
 
-def ask(messages, cfg, api_key, stream, show_reasoning, printed):
+def ask(messages, cfg, api_key, stream, show_reasoning, printed, markdown=False):
     """Send `messages`, echo the reply, and return the assistant message.
 
     `printed` says whether the caller wants the answer on stdout; streaming
     prints as it arrives, so this only covers the non-streaming path.
     """
     if stream:
-        return stream_complete(messages, cfg, api_key, show_reasoning)
+        return stream_complete(messages, cfg, api_key, show_reasoning, markdown)
 
     message, usage = complete(messages, cfg, api_key)
 
@@ -230,7 +269,7 @@ def ask(messages, cfg, api_key, stream, show_reasoning, printed):
         if reasoning:
             print(f"{c.dim}thinking: {reasoning}{c.reset}\n")
     if printed:
-        print(message.get("content") or "")
+        render(message.get("content"), markdown)
     return message, usage
 
 
@@ -273,6 +312,7 @@ HELP = """commands:
   /reasoning [on|off]toggle reasoning
   /think [on|off]    toggle showing the model's reasoning
   /stream [on|off]   toggle streaming
+  /markdown [on|off] toggle markdown rendering
   /history           dump the raw message list as JSON
   /save <file>       write the conversation to a JSON file
   /exit              quit (Ctrl-D works too)"""
@@ -339,6 +379,8 @@ def repl(cfg, api_key):
                 cfg.show_reasoning = _toggle(arg, cfg.show_reasoning, "think")
             elif command == "/stream":
                 cfg.stream = _toggle(arg, cfg.stream, "stream")
+            elif command == "/markdown":
+                cfg.markdown = _toggle(arg, cfg.markdown, "markdown")
             elif command == "/history":
                 print(json.dumps(messages, indent=2))
             elif command == "/save":
@@ -365,6 +407,7 @@ def repl(cfg, api_key):
                 stream=cfg.stream,
                 show_reasoning=cfg.show_reasoning,
                 printed=True,
+                markdown=cfg.markdown,
             )
         except RuntimeError as exc:
             messages.pop()  # drop the turn that failed
@@ -396,6 +439,9 @@ class Config:
         self.temperature = args.temperature
         self.max_tokens = args.max_tokens
         self.usage = args.usage
+        # Rendering markdown into a pipe would mangle it, so only do it for a
+        # real terminal unless the user forces the issue.
+        self.markdown = not args.plain and sys.stdout.isatty()
 
 
 def parse_args(argv):
@@ -416,6 +462,8 @@ def parse_args(argv):
     parser.add_argument("--temperature", type=float, help="sampling temperature")
     parser.add_argument("--max-tokens", type=int, help="cap the reply length")
     parser.add_argument("--usage", action="store_true", help="print token usage after each reply")
+    parser.add_argument("--plain", action="store_true",
+                        help="print raw markdown instead of rendering it")
     parser.add_argument("--json", action="store_true",
                         help="print the raw assistant message as JSON (one-shot only)")
     return parser.parse_args(argv)
@@ -451,6 +499,7 @@ def main(argv=None):
             stream=cfg.stream and not args.json,
             show_reasoning=cfg.show_reasoning and not args.json,
             printed=not args.json,
+            markdown=cfg.markdown and not args.json,
         )
     except RuntimeError as exc:
         die(str(exc))

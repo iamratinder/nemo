@@ -65,6 +65,25 @@ colors clash with your terminal.
 
 ### Interactive commands
 
-`/help` `/reset` `/model [name]` `/system [text]` `/reasoning [on|off]`
-`/think [on|off]` `/stream [on|off]` `/markdown [on|off]` `/history`
-`/save <file>` `/exit`
+Type `/` and the full command list drops down with descriptions, filtering as
+you keep typing. Tab or the arrow keys pick one; unambiguous prefixes work on
+their own, so `/mar` runs `/markdown` and `/m` reports that it's ambiguous
+between `/model` and `/markdown`.
+
+| command | |
+| --- | --- |
+| `/help` | the command list (so does a bare `/`) |
+| `/config` | show every current setting, plus the conversation size |
+| `/reset` | clear the conversation, keep the system prompt |
+| `/model [name]` | show or switch the model |
+| `/system [text]` | show, set, or clear the system prompt |
+| `/reasoning [on\|off]` | toggle reasoning |
+| `/think [on\|off]` | toggle showing the model's reasoning |
+| `/stream [on\|off]` | toggle streaming |
+| `/markdown [on\|off]` | toggle markdown rendering |
+| `/history` | dump the raw message list as JSON |
+| `/save <file>` | write the conversation to a JSON file |
+| `/exit` | quit (`/quit`, `/q` too) |
+
+Ctrl-C clears the current line; Ctrl-D quits. Up and down arrows walk back
+through what you've typed this session.

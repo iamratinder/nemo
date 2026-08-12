@@ -13,6 +13,9 @@ import sys
 
 import requests
 from dotenv import load_dotenv
+from prompt_toolkit import PromptSession
+from prompt_toolkit.completion import Completer, Completion
+from prompt_toolkit.formatted_text import ANSI
 from rich.console import Console
 from rich.live import Live
 from rich.markdown import Markdown
@@ -304,18 +307,99 @@ def format_usage(usage):
 
 # --- interactive session -----------------------------------------------------
 
-HELP = """commands:
-  /help              show this help
-  /reset             clear the conversation (keeps the system prompt)
-  /model [name]      show or switch the model
-  /system [text]     show, set, or clear (/system with no text) the system prompt
-  /reasoning [on|off]toggle reasoning
-  /think [on|off]    toggle showing the model's reasoning
-  /stream [on|off]   toggle streaming
-  /markdown [on|off] toggle markdown rendering
-  /history           dump the raw message list as JSON
-  /save <file>       write the conversation to a JSON file
-  /exit              quit (Ctrl-D works too)"""
+# (command, argument spec, description) - drives both /help and the type-ahead
+# menu, so the two can't drift apart.
+COMMANDS = [
+    ("/help", "", "show this help"),
+    ("/config", "", "show the current settings"),
+    ("/reset", "", "clear the conversation (keeps the system prompt)"),
+    ("/model", "[name]", "show or switch the model"),
+    ("/system", "[text]", "show, set, or clear (no text) the system prompt"),
+    ("/reasoning", "[on|off]", "toggle reasoning"),
+    ("/think", "[on|off]", "toggle showing the model's reasoning"),
+    ("/stream", "[on|off]", "toggle streaming"),
+    ("/markdown", "[on|off]", "toggle markdown rendering"),
+    ("/history", "", "dump the raw message list as JSON"),
+    ("/save", "<file>", "write the conversation to a JSON file"),
+    ("/exit", "", "quit (Ctrl-D works too)"),
+]
+
+
+def help_text():
+    width = max(len(name) + len(spec) + 1 for name, spec, _ in COMMANDS)
+    lines = ["commands:"]
+    for name, spec, description in COMMANDS:
+        usage = f"{name} {spec}".strip()
+        lines.append(f"  {usage.ljust(width)}  {description}")
+    return "\n".join(lines)
+
+
+def _onoff(value):
+    return "on" if value else "off"
+
+
+def config_text(cfg, messages=None):
+    """Everything the flags and toggles are currently set to."""
+    system = cfg.system or "(none)"
+    if len(system) > 60:
+        system = system[:57] + "..."
+    rows = [
+        ("model", cfg.model),
+        ("system", system),
+        ("reasoning", _onoff(cfg.reasoning)),
+        ("think", _onoff(cfg.show_reasoning)),
+        ("stream", _onoff(cfg.stream)),
+        ("markdown", _onoff(cfg.markdown)),
+        ("usage", _onoff(cfg.usage)),
+        ("temperature",
+         "model default" if cfg.temperature is None else str(cfg.temperature)),
+        ("max-tokens",
+         "unlimited" if cfg.max_tokens is None else str(cfg.max_tokens)),
+    ]
+    if messages is not None:
+        turns = sum(1 for m in messages if m.get("role") == "user")
+        rows.append(("conversation", f"{len(messages)} messages, {turns} turns"))
+    width = max(len(label) for label, _ in rows)
+    return "\n".join(["config:"] + [f"  {l.ljust(width)}  {v}" for l, v in rows])
+
+
+ALIASES = {"/quit": "/exit", "/q": "/exit"}
+
+
+def resolve_command(word):
+    """Map a typed command to a real one, accepting unambiguous prefixes.
+
+    Returns None when the prefix is ambiguous (already reported to the user).
+    """
+    if word in ALIASES:
+        return ALIASES[word]
+    names = [name for name, _, _ in COMMANDS]
+    if word in names:
+        return word
+    matches = [name for name in names if name.startswith(word)]
+    if len(matches) == 1:
+        return matches[0]
+    if matches:
+        info(f"ambiguous: {word} matches {', '.join(matches)}")
+        return None
+    return word  # unknown; the dispatcher reports it
+
+
+class SlashCompleter(Completer):
+    """Offer the command list as soon as the line starts with a slash."""
+
+    def get_completions(self, document, complete_event):
+        text = document.text_before_cursor
+        if not text.startswith("/") or " " in text:
+            return  # not a command, or already past the command word
+        for name, spec, description in COMMANDS:
+            if name.startswith(text):
+                yield Completion(
+                    name,
+                    start_position=-len(text),
+                    display=f"{name} {spec}".strip(),
+                    display_meta=description,
+                )
 
 
 def _toggle(arg, current, label):
@@ -332,31 +416,57 @@ def _toggle(arg, current, label):
     return value
 
 
+def make_reader():
+    """A prompt that pops up the command menu on '/', with plain-input fallback."""
+    prompt = f"{c.cyan}{c.bold}you>{c.reset} "
+    try:
+        session = PromptSession(
+            completer=SlashCompleter(),
+            complete_while_typing=True,
+            reserve_space_for_menu=len(COMMANDS) + 1,
+        )
+    except Exception:
+        return lambda: input(prompt)  # not a full terminal; degrade quietly
+    return lambda: session.prompt(ANSI(prompt))
+
+
 def repl(cfg, api_key):
     messages = []
     if cfg.system:
         messages.append({"role": "system", "content": cfg.system})
 
-    info(f"{cfg.model} - /help for commands, Ctrl-D to quit")
+    read = make_reader()
+    info(f"{cfg.model} - type / for commands, Ctrl-D to quit")
 
     while True:
         try:
-            line = input(f"{c.cyan}{c.bold}you>{c.reset} ").strip()
-        except (EOFError, KeyboardInterrupt):
+            line = read().strip()
+        except EOFError:
             print()
             return 0
+        except KeyboardInterrupt:
+            continue  # Ctrl-C clears the line; Ctrl-D or /exit quits
 
         if not line:
             continue
 
-        if line.startswith("/"):
-            command, _, arg = line.partition(" ")
-            arg = arg.strip()
+        if line == "/":
+            info(help_text())
+            continue
 
-            if command in ("/exit", "/quit", "/q"):
+        if line.startswith("/"):
+            word, _, arg = line.partition(" ")
+            arg = arg.strip()
+            command = resolve_command(word)
+            if command is None:
+                continue
+
+            if command == "/exit":
                 return 0
             if command == "/help":
-                info(HELP)
+                info(help_text())
+            elif command == "/config":
+                info(config_text(cfg, messages))
             elif command == "/reset":
                 messages = [m for m in messages if m.get("role") == "system"]
                 info("conversation cleared")

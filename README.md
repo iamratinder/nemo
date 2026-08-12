@@ -9,27 +9,31 @@ chain of thought instead of starting cold.
 
 ```sh
 python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
+.venv/bin/pip install -e .
 echo 'OPENROUTER_API_KEY=sk-or-...' > .env
 ```
+
+That puts a `nemo` command in `.venv/bin`. Activate the venv (`source
+.venv/bin/activate`) to call it as `nemo`, or run it without installing at all
+via `.venv/bin/python -m nemo`.
 
 ## Use
 
 ```sh
 # one-shot
-.venv/bin/python nemo.py "How many r's are in 'strawberry'?"
+nemo "How many r's are in 'strawberry'?"
 
 # show the reasoning too, streamed
-.venv/bin/python nemo.py --think --stream "How many r's are in 'strawberry'?"
+nemo --think --stream "How many r's are in 'strawberry'?"
 
 # piped input
-git diff | .venv/bin/python nemo.py "Write a commit message for this diff"
+git diff | nemo "Write a commit message for this diff"
 
 # raw message JSON, for scripting
-.venv/bin/python nemo.py --json "hi" | jq -r .content
+nemo --json "hi" | jq -r .content
 
 # interactive chat
-.venv/bin/python nemo.py
+nemo
 ```
 
 ### Flags
@@ -87,3 +91,28 @@ between `/model` and `/markdown`.
 
 Ctrl-C clears the current line; Ctrl-D quits. Up and down arrows walk back
 through what you've typed this session.
+
+## Layout
+
+```
+nemo/
+  cli.py         argument parsing; the one-shot path
+  repl.py        the interactive session
+  commands.py    slash commands, their help, the type-ahead menu
+  chat.py        joins the client to the display
+  client.py      HTTP to OpenRouter; streaming yields events, never prints
+  ui.py          colors, markdown rendering, the live streaming region
+  messages.py    building and trimming the message list (pure functions)
+  config.py      settings from flags and environment
+  errors.py      NemoError
+pyproject.toml   dependencies, packaging, the `nemo` entry point
+```
+
+The split that matters is `client.py` against `ui.py`: the client turns the SSE
+stream into `StreamEvent`s and hands them up, so the transport has no opinion
+about terminals and the renderer has no opinion about HTTP. `messages.py` is
+pure data with no I/O, which makes the fiddly parts - reasoning-fragment
+merging, history trimming - testable without a network.
+
+Dependencies live only in `pyproject.toml`; there is no `requirements.txt` to
+drift out of sync with it.

@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nemo-chat"
+version = "0.1.0"
+description = "A reasoning-aware chat CLI for OpenRouter models"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "requests>=2.32",
+    "python-dotenv>=1.0",
+    "rich>=13.0",
+    "prompt_toolkit>=3.0",
+]
+
+[project.scripts]
+nemo = "nemo.cli:main"
+
+[tool.setuptools]
+packages = ["nemo"]
